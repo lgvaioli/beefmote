@@ -17,23 +17,29 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <assert.h>
 #include <unistd.h>
 #include <deadbeef/deadbeef.h>
+
+#define DEBUG 1
+
+#define beefmote_debug_print(fmt, ...) \
+        do { if (DEBUG) fprintf(stderr, "[beefmote] " fmt, ##__VA_ARGS__); } while (0)
 
 typedef struct DB_beefmote_plugin_s
 {
     DB_misc_t misc;
 } DB_beefmote_plugin_t;
 
-// Globals
+// Globals.
 static DB_functions_t* deadbeef; // deadbeef's plugin API
 static DB_beefmote_plugin_t beefmote_plugin; // beefmote's plugin description
-static uintptr_t beefmote_mutex;
+static uintptr_t beefmote_stopthread_mutex;
 static intptr_t beefmote_tid;
 static int beefmote_stopthread;
 static int beefmote_socket;
 
-// Beefmote's settings dialog widget description
+// Beefmote's settings dialog widget description.
 static const char beefmote_settings_dialog[] =
 {
     "property \"Enabled\" checkbox beefmote.enable 0;"
@@ -45,7 +51,6 @@ static const char beefmote_settings_dialog[] =
 // It registers the plugin with Deadbeef and gives us access to the plugins API.
 DB_plugin_t* beefmote_load(DB_functions_t* api)
 {
-    printf("\n\n[LAUREANO] beefmote_load\n\n");
     deadbeef = api;
     return DB_PLUGIN(&beefmote_plugin);
 }
@@ -56,25 +61,26 @@ static void beefmote_thread(void* data);
 // Beefmote's entry point. Second thing executed by Deadbeef on plugin load.
 static int plugin_start()
 {
-    printf("\n\n[LAUREANO] plugin_start\n\n");
     beefmote_stopthread = 0;
-    beefmote_mutex = deadbeef->mutex_create_nonrecursive();
+    beefmote_stopthread_mutex = deadbeef->mutex_create_nonrecursive();
     beefmote_socket = -1; // FIXME: implement socket
     beefmote_tid = deadbeef->thread_start(beefmote_thread, NULL);
 
     return 0;
 }
 
-// Beefmote's exit point. Executed by Deadbeef on program exit.
+// Beefmote's exit point. Executed by Deadbeef on program exit (i.e. when the
+// DB_EV_TERMINATE signal is sent to Deadbeef).
 static int plugin_stop()
 {
-    printf("\n\n[LAUREANO] plugin_stop\n\n");
-
     if(beefmote_tid)
     {
+        deadbeef->mutex_lock(beefmote_stopthread_mutex);
 	beefmote_stopthread = 1;
-	deadbeef->thread_join(beefmote_tid);
-	deadbeef->mutex_free(beefmote_mutex);
+        deadbeef->mutex_unlock(beefmote_stopthread_mutex);
+
+	deadbeef->thread_join(beefmote_tid); // wait for Beefmote's thread to finish
+	deadbeef->mutex_free(beefmote_stopthread_mutex);
         if(beefmote_socket != -1)
         {
 	    close(beefmote_socket);
@@ -84,7 +90,7 @@ static int plugin_stop()
     return 0;
 }
 
-// Plugin description
+// Plugin description.
 static DB_beefmote_plugin_t beefmote_plugin =
 {
     .misc.plugin.api_vmajor = 1,
@@ -121,13 +127,10 @@ static DB_beefmote_plugin_t beefmote_plugin =
  // End of Deadbeef's boilerplate //
 ///////////////////////////////////
 
-// Prints a track in the format "[Tool - Lateralus] 05 - Schism (6:48)"
+// Prints a track in the format "[Tool - Lateralus] 05 - Schism (6:48)".
 static void track_print(DB_playItem_t* track)
 {
-    if(!track)
-    {
-        return;
-    }
+    assert(track);
 
     const char* track_artist = deadbeef->pl_meta_for_key(track, "artist")->value;
     const char* track_album = deadbeef->pl_meta_for_key(track, "album")->value;
@@ -140,46 +143,54 @@ static void track_print(DB_playItem_t* track)
     printf("[%s - %s] %s - %s (%s)\n", track_artist, track_album, track_tracknumber, track_title, track_length);
 }
 
+// Prints all tracks of a playlist using track_print. Returns number of tracks printed.
+int playlist_print_tracks(ddb_playlist_t* playlist)
+{
+    assert(playlist);
+
+    int i = 0;
+    DB_playItem_t* track;
+
+    while(track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN))
+    {
+        track_print(track);
+        deadbeef->pl_item_unref(track);
+    }
+
+    return --i;
+}
+
 static void beefmote_thread(void* data)
 {
-    printf("\n\n[LAUREANO] beefmote_thread\n\n");
+    static bool tracks_shown = false;
 
     // Infinite loop. We only exit when Deadbeef calls the
     // plugin_stop function on program exit.
     for(;;)
     {
-        // If plugin_stop was executed, release mutex and return
+        // If plugin_stop was executed, get out of loop.
+        deadbeef->mutex_lock(beefmote_stopthread_mutex);
         if(beefmote_stopthread == 1)
         {
-            deadbeef->mutex_unlock(beefmote_mutex);
+            deadbeef->mutex_unlock(beefmote_stopthread_mutex);
             return;
         }
+        deadbeef->mutex_unlock(beefmote_stopthread_mutex);
 
         // For now, we just display all the tracks in the current playlist.
         ddb_playlist_t* pl_curr = deadbeef->plt_get_curr();
 
-        if(!pl_curr)
+        if(pl_curr)
         {
-            printf("\n\n[LAUREANO] no current playlist!\n\n");
-        }
-        else
-        {
-            // Have we already shown the info?
-            static bool info_shown = false;
-
-            if(!info_shown)
+            if(!tracks_shown)
             {
-                int i = 0;
-                DB_playItem_t* track = NULL;
+                int tracks_num = playlist_print_tracks(pl_curr);
 
-                while(track = deadbeef->plt_get_item_for_idx(pl_curr, i++, PL_MAIN))
+                if(tracks_num)
                 {
-                    info_shown = true; // it'll keep trying until at least one track is shown
-                    track_print(track);
-                    deadbeef->pl_item_unref(track);
+                    tracks_shown = true;
+                    beefmote_debug_print("Printed %d tracks\n", tracks_num);
                 }
-
-                printf("\n\n[LAUREANO] total tracks: %d\n\n", i-1);
             }
 
             deadbeef->plt_unref(pl_curr);

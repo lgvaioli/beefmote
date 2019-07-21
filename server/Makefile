@@ -1,4 +1,4 @@
-CFLAGS=-O2 -fPIC -g3
+CFLAGS=-O2 -fPIC -g3 -std=c99
 LDFLAGS=-shared
 
 all :
