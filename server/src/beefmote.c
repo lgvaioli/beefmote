@@ -35,6 +35,7 @@
 #define BEEFMOTE_DEFAULT_PORT 49160
 #define BEEFMOTE_BUFSIZE 1000
 #define BEEFMOTE_WAIT_CLIENT 1
+#define BEEFMOTE_TRACKSTR_MAXLENGTH 1000
 
 #define beefmote_debug_print(fmt, ...) \
         do { if (DEBUG) fprintf(stderr, "[beefmote] " fmt, ##__VA_ARGS__); } while (0)
@@ -42,6 +43,15 @@
 typedef struct DB_beefmote_plugin_s {
     DB_misc_t misc;
 } DB_beefmote_plugin_t;
+
+enum BEEFMOTE_COMMANDS {
+    BEEFMOTE_HELP,
+    BEEFMOTE_SHOWTRACKS,
+    BEEFMOTE_PLAY,
+    BEEFMOTE_PREVIOUS,
+    BEEFMOTE_EXIT,
+    BEEFMOTE_DUMMYEND // marks end of command list
+};
 
 // Globals.
 static DB_functions_t *deadbeef;        // deadbeef's plugin API
@@ -70,6 +80,9 @@ static void beefmote_thread(void *data);
 
 // Prepares Beefmote's socket for listening.
 static void beefmote_listen();
+
+// Processes a Beefmote command.
+static void beefmote_process_command(int client_socket, char* command);
 
 // Beefmote's entry point. Second thing executed by Deadbeef on plugin load.
 static int plugin_start()
@@ -138,8 +151,9 @@ static DB_beefmote_plugin_t beefmote_plugin = {
 ///////////////////////////////////
 
 // Prints a track in the format "[Tool - Lateralus] 05 - Schism (6:48)".
-static void track_print(DB_playItem_t *track)
+static void beefmote_print_track(int client_socket, DB_playItem_t *track)
 {
+    assert(client_socket > 0);
     assert(track);
 
     const char *track_artist = deadbeef->pl_meta_for_key(track, "artist")->value;
@@ -148,24 +162,44 @@ static void track_print(DB_playItem_t *track)
     const char *track_tracknumber = deadbeef->pl_meta_for_key(track, "track")->value;
     char track_length[100];
     float len = deadbeef->pl_get_item_duration(track);
-
     deadbeef->pl_format_time(len, track_length, 100);
+    char track_str[BEEFMOTE_TRACKSTR_MAXLENGTH];
 
-    printf("[%s - %s] %s - %s (%s)\n", track_artist, track_album, track_tracknumber, track_title,
-           track_length);
+    sprintf(track_str, "[%s - %s] %s - %s (%s)\n", track_artist, track_album, track_tracknumber, track_title,
+            track_length);
+
+    int track_str_len = strlen(track_str);
+
+    int bytes_n = write(client_socket, track_str, track_str_len);
+   
+    if (bytes_n != track_str_len) {
+        beefmote_debug_print("error: failure while sending data to client\n");
+    }
 }
 
 // Prints all tracks of a playlist using track_print. Returns number of tracks printed.
-int playlist_print_tracks(ddb_playlist_t *playlist)
+int beefmote_print_playlist(int client_socket, ddb_playlist_t *playlist)
 {
+    assert(client_socket > 0);
     assert(playlist);
 
     int i = 0;
     DB_playItem_t *track;
 
+    int bytes_n = write(client_socket, "\n", 1);
+    if (bytes_n != 1) {
+        beefmote_debug_print("error: couldn't send all data to client\n");
+    }
+
     while (track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN)) {
-        track_print(track);
+        beefmote_print_track(client_socket, track);
         deadbeef->pl_item_unref(track);
+    }
+
+    bytes_n = write(client_socket, "\n", 1);
+
+    if (bytes_n != 1) {
+        beefmote_debug_print("error: couldn't send all data to client\n");
     }
 
     return --i;
@@ -173,9 +207,7 @@ int playlist_print_tracks(ddb_playlist_t *playlist)
 
 static void beefmote_thread(void *data)
 {
-    static bool tracks_shown = false;
     char beefmote_buffer[BEEFMOTE_BUFSIZE];
-
     memset(beefmote_buffer, 0, BEEFMOTE_BUFSIZE);
 
     int client_socket;
@@ -186,7 +218,7 @@ static void beefmote_thread(void *data)
     struct timeval timeout;
 
     char welcome_str[] = "Hello! Welcome to Beefmote's server. " \
-                         "Type \"help\" for a list of available commands\n";
+                         "Type \"help\" for a list of available commands\n\n";
     int welcome_len = strlen(welcome_str);
 
     // Infinite loop. We only exit when Deadbeef calls the
@@ -215,8 +247,7 @@ static void beefmote_thread(void *data)
         int bytes_n = write(client_socket, welcome_str, welcome_len);
 
         if (bytes_n != welcome_len) {
-            beefmote_debug_print("error: failure while sending welcome message to client %s\n",
-                                 inet_ntoa(client_addr.sin_addr));
+            beefmote_debug_print("error: failure while sending data to client\n");
         }
 
         // At this point, a client is connected. We now just have to wait for it
@@ -263,8 +294,11 @@ static void beefmote_thread(void *data)
                         break;
                     }
 
-                    beefmote_debug_print("received %d bytes from client %s: %s", bytes_n,
-                                         inet_ntoa(client_addr.sin_addr), beefmote_buffer);
+                    // Process commands.
+                    beefmote_process_command(client_socket, beefmote_buffer);
+
+                    //beefmote_debug_print("received %d bytes from client %s: %s", bytes_n,
+                    //                     inet_ntoa(client_addr.sin_addr), beefmote_buffer);
                     memset(beefmote_buffer, 0, BEEFMOTE_BUFSIZE);
                 }
             }
@@ -360,5 +394,54 @@ static void beefmote_listen()
         close(beefmote_socket);
         beefmote_socket = -1;
         return;
+    }
+}
+
+static void beefmote_process_command(int client_socket, char* command)
+{
+    assert(client_socket > 0);
+    assert(command);
+
+    // Valid commands
+    char help[] = "help";
+    int help_len = strlen(help);
+    char show_tracks[] = "show-tracks";
+    int show_tracks_len = strlen(show_tracks);
+    char exit[] = "exit";
+    int exit_len = strlen(exit);
+    char play[] = "play";
+    int play_len = strlen(play);
+
+    if (strncmp(help, command, help_len) == 0) {
+        char help_msg[] = "\nhelp\n\tprints this message\n" \
+                          "show-tracks\n\tprints all the tracks in the current playlist\n" \
+                          "play\n\tplays current track\n" \
+                          "exit\n\tterminates Deadbeef\n\n";
+        int help_msg_len = strlen(help_msg);
+        int bytes_n = write(client_socket, help_msg, help_msg_len);
+        if (bytes_n != help_msg_len) {
+            beefmote_debug_print("error: failure while sending message to client\n");
+        }
+    }
+    else if (strncmp(show_tracks, command, show_tracks_len) == 0) {
+        ddb_playlist_t* pl_curr = deadbeef->plt_get_curr();
+        if (pl_curr) {
+            beefmote_print_playlist(client_socket, pl_curr);
+            deadbeef->plt_unref(pl_curr);
+        }
+    }
+    else if (strncmp(exit, command, exit_len) == 0) {
+        deadbeef->sendmessage(DB_EV_TERMINATE, 0, 0, 0);
+    }
+    else if (strncmp(play, command, play_len) == 0) {
+        deadbeef->sendmessage(DB_EV_PLAY_CURRENT, 0, 0, 0);
+    }
+    else {
+        char invalid[] = "\nPlease type a valid command\n\n";
+        int invalid_len = strlen(invalid);
+        int bytes_n = write(client_socket, invalid, invalid_len);
+        if (bytes_n != invalid_len) {
+            beefmote_debug_print("error: failure while sending message to client\n");
+        }
     }
 }
