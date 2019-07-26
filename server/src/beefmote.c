@@ -54,9 +54,11 @@ typedef struct DB_beefmote_plugin_s {
 enum BEEFMOTE_COMMANDS {
     BEEFMOTE_HELP,
     BEEFMOTE_TRACKLIST,
+    BEEFMOTE_TRACKLIST_ADDRESS,
     BEEFMOTE_TRACKCURR,
     BEEFMOTE_PLAY,
     BEEFMOTE_PLAY_SEARCH,
+    BEEFMOTE_PLAY_ADDRESS,
     BEEFMOTE_RANDOM,
     BEEFMOTE_PAUSE,
     BEEFMOTE_STOP_AFTER_CURRENT,
@@ -117,12 +119,18 @@ static void beefmote_process_command(int client_socket, char *command);
 // emmited by Deadbeef.
 static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2);
 
+// Helper function for creating Beefmote's commands.
+static void beefmote_command_new(int comm_id, const char *comm_name, const char *comm_help,
+                                 void (*execute)(int client_socket, void* data));
+
 // Beefmote's commands.
 static void beefmote_command_help(int client_socket, void *data);
 static void beefmote_command_tracklist(int client_socket, void *data);
+static void beefmote_command_tracklist_address(int client_socket, void *data);
 static void beefmote_command_trackcurr(int client_socket, void *data);
 static void beefmote_command_play(int client_socket, void *data);
 static void beefmote_command_play_search(int client_socket, void *data);
+static void beefmote_command_play_address(int client_socket, void *data);
 static void beefmote_command_random(int client_socket, void *data);
 static void beefmote_command_pause(int client_socket, void *data);
 static void beefmote_command_stop(int client_socket, void *data);
@@ -148,10 +156,11 @@ static inline void client_print_newline(int client_socket);
 static void client_print_string(int client_socket, const char* string);
 
 // Prints a track in the format "[Tool - Lateralus] 05 - Schism (6:48)" to a client.
-static void client_print_track(int client_socket, DB_playItem_t *track);
+// print_addr indicates whether the track's memory address should be prepended.
+static void client_print_track(int client_socket, DB_playItem_t *track, bool print_addr);
 
 // Prints to a client all tracks of a playlist using client_print_track. Returns number of tracks printed.
-static int client_print_playlist(int client_socket, ddb_playlist_t *playlist);
+static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bool print_addr);
 
 
   /////////////////////////////////////
@@ -257,7 +266,7 @@ static void client_print_string(int client_socket, const char* string)
     }
 }
 
-static void client_print_track(int client_socket, DB_playItem_t *track)
+static void client_print_track(int client_socket, DB_playItem_t *track, bool print_addr)
 {
     assert(client_socket > 0);
     assert(track);
@@ -271,19 +280,23 @@ static void client_print_track(int client_socket, DB_playItem_t *track)
     deadbeef->pl_format_time(len, track_length, 100);
     char track_str[BEEFMOTE_TRACKSTR_MAXLENGTH];
 
-    sprintf(track_str, "[%s - %s] %s - %s (%s)\n", track_artist, track_album, track_tracknumber, track_title,
-            track_length);
+    if (print_addr) {
+        sprintf(track_str, "%p [%s - %s] %s - %s (%s)\n", track, track_artist, track_album, track_tracknumber, track_title,
+                track_length);
+    }
+    else {
+        sprintf(track_str, "[%s - %s] %s - %s (%s)\n", track_artist, track_album, track_tracknumber, track_title,
+                track_length);
+    }
 
     int track_str_len = strlen(track_str);
-
     int bytes_n = write(client_socket, track_str, track_str_len);
-   
     if (bytes_n != track_str_len) {
         beefmote_debug_print("error: failure while sending data to client\n");
     }
 }
 
-static int client_print_playlist(int client_socket, ddb_playlist_t *playlist)
+static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bool print_addr)
 {
     assert(client_socket > 0);
     assert(playlist);
@@ -294,7 +307,7 @@ static int client_print_playlist(int client_socket, ddb_playlist_t *playlist)
     client_print_newline(client_socket);
 
     while (track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN)) {
-        client_print_track(client_socket, track);
+        client_print_track(client_socket, track, print_addr);
         deadbeef->pl_item_unref(track);
     }
 
@@ -496,96 +509,48 @@ static void beefmote_listen()
     }
 }
 
+static void beefmote_command_new(int comm_id, const char *comm_name, const char *comm_help,
+                                 void (*execute)(int client_socket, void* data))
+{
+    assert(comm_id >= 0 && comm_id < BEEFMOTE_COMMANDS_N);
+    assert(comm_name);
+    assert(comm_help);
+
+    strcpy(beefmote_commands[comm_id].name, comm_name);
+    beefmote_commands[comm_id].name_len = strlen(comm_name);
+    strcpy(beefmote_commands[comm_id].help, comm_help);
+    beefmote_commands[comm_id].execute = execute;
+}
+
 static void beefmote_initialize_commands()
 {
-    strcpy(beefmote_commands[BEEFMOTE_HELP].name, "h");
-    beefmote_commands[BEEFMOTE_HELP].name_len = strlen(beefmote_commands[BEEFMOTE_HELP].name);
-    strcpy(beefmote_commands[BEEFMOTE_HELP].help, "prints this message");
-    beefmote_commands[BEEFMOTE_HELP].execute = &beefmote_command_help;
-
-    strcpy(beefmote_commands[BEEFMOTE_TRACKLIST].name, "tl");
-    beefmote_commands[BEEFMOTE_TRACKLIST].name_len = strlen(beefmote_commands[BEEFMOTE_TRACKLIST].name);
-    strcpy(beefmote_commands[BEEFMOTE_TRACKLIST].help, "prints all the tracks in the current playlist");
-    beefmote_commands[BEEFMOTE_TRACKLIST].execute = &beefmote_command_tracklist;
-
-    strcpy(beefmote_commands[BEEFMOTE_TRACKCURR].name, "tc");
-    beefmote_commands[BEEFMOTE_TRACKCURR].name_len = strlen(beefmote_commands[BEEFMOTE_TRACKCURR].name);
-    strcpy(beefmote_commands[BEEFMOTE_TRACKCURR].help, "prints the current track");
-    beefmote_commands[BEEFMOTE_TRACKCURR].execute = &beefmote_command_trackcurr;
-
-    strcpy(beefmote_commands[BEEFMOTE_PLAY].name, "pp");
-    beefmote_commands[BEEFMOTE_PLAY].name_len = strlen(beefmote_commands[BEEFMOTE_PLAY].name);
-    strcpy(beefmote_commands[BEEFMOTE_PLAY].help, "plays current track");
-    beefmote_commands[BEEFMOTE_PLAY].execute = &beefmote_command_play;
-
-    strcpy(beefmote_commands[BEEFMOTE_PLAY_SEARCH].name, "ps");
-    beefmote_commands[BEEFMOTE_PLAY_SEARCH].name_len = strlen(beefmote_commands[BEEFMOTE_PLAY_SEARCH].name);
-    strcpy(beefmote_commands[BEEFMOTE_PLAY_SEARCH].help, "Usage: ps [num]. plays a track in the search list.");
-    beefmote_commands[BEEFMOTE_PLAY_SEARCH].execute = &beefmote_command_play_search;
-
-    strcpy(beefmote_commands[BEEFMOTE_RANDOM].name, "r");
-    beefmote_commands[BEEFMOTE_RANDOM].name_len = strlen(beefmote_commands[BEEFMOTE_RANDOM].name);
-    strcpy(beefmote_commands[BEEFMOTE_RANDOM].help, "plays random track");
-    beefmote_commands[BEEFMOTE_RANDOM].execute = &beefmote_command_random;
-
-    strcpy(beefmote_commands[BEEFMOTE_PAUSE].name, "p");
-    beefmote_commands[BEEFMOTE_PAUSE].name_len = strlen(beefmote_commands[BEEFMOTE_PAUSE].name);
-    strcpy(beefmote_commands[BEEFMOTE_PAUSE].help, "pauses/resumes playback");
-    beefmote_commands[BEEFMOTE_PAUSE].execute = &beefmote_command_pause;
-
-    strcpy(beefmote_commands[BEEFMOTE_STOP_AFTER_CURRENT].name, "sac");
-    beefmote_commands[BEEFMOTE_STOP_AFTER_CURRENT].name_len = strlen(beefmote_commands[BEEFMOTE_STOP_AFTER_CURRENT].name);
-    strcpy(beefmote_commands[BEEFMOTE_STOP_AFTER_CURRENT].help, "stops playback after current track");
-    beefmote_commands[BEEFMOTE_STOP_AFTER_CURRENT].execute = &beefmote_command_stop_after_current;
-
-    strcpy(beefmote_commands[BEEFMOTE_STOP].name, "s");
-    beefmote_commands[BEEFMOTE_STOP].name_len = strlen(beefmote_commands[BEEFMOTE_STOP].name);
-    strcpy(beefmote_commands[BEEFMOTE_STOP].help, "stops playback");
-    beefmote_commands[BEEFMOTE_STOP].execute = &beefmote_command_stop;
-
-    strcpy(beefmote_commands[BEEFMOTE_PREVIOUS].name, "pv");
-    beefmote_commands[BEEFMOTE_PREVIOUS].name_len = strlen(beefmote_commands[BEEFMOTE_PREVIOUS].name);
-    strcpy(beefmote_commands[BEEFMOTE_PREVIOUS].help, "plays previous track");
-    beefmote_commands[BEEFMOTE_PREVIOUS].execute = &beefmote_command_previous;
-
-    strcpy(beefmote_commands[BEEFMOTE_NEXT].name, "nt");
-    beefmote_commands[BEEFMOTE_NEXT].name_len = strlen(beefmote_commands[BEEFMOTE_NEXT].name);
-    strcpy(beefmote_commands[BEEFMOTE_NEXT].help, "plays next track");
-    beefmote_commands[BEEFMOTE_NEXT].execute = &beefmote_command_next;
-
-    strcpy(beefmote_commands[BEEFMOTE_VOLUME_UP].name, "vup");
-    beefmote_commands[BEEFMOTE_VOLUME_UP].name_len = strlen(beefmote_commands[BEEFMOTE_VOLUME_UP].name);
-    strcpy(beefmote_commands[BEEFMOTE_VOLUME_UP].help, "increases volume");
-    beefmote_commands[BEEFMOTE_VOLUME_UP].execute = &beefmote_command_volume_up;
-
-    strcpy(beefmote_commands[BEEFMOTE_VOLUME_DOWN].name, "vdw");
-    beefmote_commands[BEEFMOTE_VOLUME_DOWN].name_len = strlen(beefmote_commands[BEEFMOTE_VOLUME_DOWN].name);
-    strcpy(beefmote_commands[BEEFMOTE_VOLUME_DOWN].help, "decreases volume");
-    beefmote_commands[BEEFMOTE_VOLUME_DOWN].execute = &beefmote_command_volume_down;
-
-    strcpy(beefmote_commands[BEEFMOTE_SEEK_FORWARD].name, "sfr");
-    beefmote_commands[BEEFMOTE_SEEK_FORWARD].name_len = strlen(beefmote_commands[BEEFMOTE_SEEK_FORWARD].name);
-    strcpy(beefmote_commands[BEEFMOTE_SEEK_FORWARD].help, "seeks forward");
-    beefmote_commands[BEEFMOTE_SEEK_FORWARD].execute = &beefmote_command_seek_forward;
-
-    strcpy(beefmote_commands[BEEFMOTE_SEEK_BACKWARD].name, "sbr");
-    beefmote_commands[BEEFMOTE_SEEK_BACKWARD].name_len = strlen(beefmote_commands[BEEFMOTE_SEEK_BACKWARD].name);
-    strcpy(beefmote_commands[BEEFMOTE_SEEK_BACKWARD].help, "seeks backward");
-    beefmote_commands[BEEFMOTE_SEEK_BACKWARD].execute = &beefmote_command_seek_backward;
-
-    strcpy(beefmote_commands[BEEFMOTE_SEARCH].name, "/");
-    beefmote_commands[BEEFMOTE_SEARCH].name_len = strlen(beefmote_commands[BEEFMOTE_SEARCH].name);
-    strcpy(beefmote_commands[BEEFMOTE_SEARCH].help, "Usage: / [str]. Searches a string in the current " \
-            "playlist and returns a list of matching tracks. The first matched track can be played by " \
-            "using the \"ps\" command");
-    beefmote_commands[BEEFMOTE_SEARCH].execute = &beefmote_command_search;
-
-    // FIXME: implement ps command.
-
-    strcpy(beefmote_commands[BEEFMOTE_EXIT].name, "exit");
-    beefmote_commands[BEEFMOTE_EXIT].name_len = strlen(beefmote_commands[BEEFMOTE_EXIT].name);
-    strcpy(beefmote_commands[BEEFMOTE_EXIT].help, "terminates Deadbeef");
-    beefmote_commands[BEEFMOTE_EXIT].execute = &beefmote_command_exit;
+    beefmote_command_new(BEEFMOTE_HELP, "h", "prints this message.", beefmote_command_help);
+    beefmote_command_new(BEEFMOTE_TRACKLIST, "tl", "prints all the tracks in the current playlist.",
+                         beefmote_command_tracklist);
+    beefmote_command_new(BEEFMOTE_TRACKLIST_ADDRESS, "tla", "like tl, but prepends each track by its memory " \
+                         "address. Not meant to be used by (human) users.", beefmote_command_tracklist_address);
+    beefmote_command_new(BEEFMOTE_TRACKCURR, "tc", "prints the current track.", beefmote_command_trackcurr);
+    beefmote_command_new(BEEFMOTE_PLAY, "pp", "plays current track.", beefmote_command_play);
+    beefmote_command_new(BEEFMOTE_PLAY_SEARCH, "ps", "Usage: ps [track index]. plays a track in the search list.",
+                         beefmote_command_play_search);
+    beefmote_command_new(BEEFMOTE_PLAY_ADDRESS, "pa", "Usage: pa [memory address in hex]. " \
+                         "plays a track by memory address. Not meant to be used by a (human) user: " \
+                         "you'll probably crash Deadbeef if you mess up the address.", beefmote_command_play_address);
+    beefmote_command_new(BEEFMOTE_RANDOM, "r", "plays random track.", beefmote_command_random);
+    beefmote_command_new(BEEFMOTE_PAUSE, "p", "pauses/resumes playback.", beefmote_command_pause);
+    beefmote_command_new(BEEFMOTE_STOP_AFTER_CURRENT, "sac", "stops playback after current track.",
+                         beefmote_command_stop_after_current);
+    beefmote_command_new(BEEFMOTE_STOP, "s", "stops playback.", beefmote_command_stop);
+    beefmote_command_new(BEEFMOTE_PREVIOUS, "pv", "plays previous track.", beefmote_command_previous);
+    beefmote_command_new(BEEFMOTE_NEXT, "nt", "plays next track.", beefmote_command_next);
+    beefmote_command_new(BEEFMOTE_VOLUME_UP, "vup", "increases volume.", beefmote_command_volume_up);
+    beefmote_command_new(BEEFMOTE_VOLUME_DOWN, "vdn", "decreases volume.", beefmote_command_volume_down);
+    beefmote_command_new(BEEFMOTE_SEEK_FORWARD, "sfr", "seeks forward.", beefmote_command_seek_forward);
+    beefmote_command_new(BEEFMOTE_SEEK_BACKWARD, "sbr", "seeks backward.", beefmote_command_seek_backward);
+    beefmote_command_new(BEEFMOTE_SEARCH, "/", "Usage: / [str]. Searches a string in the current " \
+            "playlist and returns a list of matching tracks. The matched tracks can be played by using their index " \
+            "number with the \"ps\" command.", beefmote_command_search);
+    beefmote_command_new(BEEFMOTE_EXIT, "exit", "terminates Deadbeef.", beefmote_command_exit);
 }
 
 static void beefmote_process_command(int client_socket, char *command)
@@ -693,7 +658,19 @@ static void beefmote_command_tracklist(int client_socket, void *data)
 
     ddb_playlist_t *pl_curr = deadbeef->plt_get_curr();
     if (pl_curr) {
-        client_print_playlist(client_socket, pl_curr);
+        client_print_playlist(client_socket, pl_curr, false);
+        deadbeef->plt_unref(pl_curr);
+    }
+}
+
+static void beefmote_command_tracklist_address(int client_socket, void *data)
+{
+    assert(client_socket > 0);
+    assert(deadbeef);
+
+    ddb_playlist_t *pl_curr = deadbeef->plt_get_curr();
+    if (pl_curr) {
+        client_print_playlist(client_socket, pl_curr, true);
         deadbeef->plt_unref(pl_curr);
     }
 }
@@ -704,7 +681,7 @@ static void beefmote_command_trackcurr(int client_socket, void *data)
 
     if (beefmote_currtrack) {
         client_print_newline(client_socket);
-        client_print_track(client_socket, beefmote_currtrack);
+        client_print_track(client_socket, beefmote_currtrack, false);
         client_print_newline(client_socket);
     }
     else {
@@ -747,7 +724,7 @@ static void beefmote_command_play_search(int client_socket, void *data)
     DB_playItem_t *track = deadbeef->plt_get_item_for_idx(pl_curr, --track_index, PL_SEARCH);
     if (track) {
         client_print_string(client_socket, "\nPlaying ");
-        client_print_track(client_socket, track);
+        client_print_track(client_socket, track, false);
         client_print_newline(client_socket);
         int idx = deadbeef->pl_get_idx_of(track); // we gotta use the track index in the MAIN playlist
         deadbeef->sendmessage(DB_EV_PLAY_NUM, 0, idx, 0);
@@ -756,6 +733,30 @@ static void beefmote_command_play_search(int client_socket, void *data)
     else {
         client_print_string(client_socket, "\nInvalid search index\n\n");
     }
+}
+
+static void beefmote_command_play_address(int client_socket, void *data)
+{
+    assert(client_socket > 0);
+
+    if(!data) {
+        client_print_newline(client_socket);
+        client_print_string(client_socket, beefmote_commands[BEEFMOTE_PLAY_ADDRESS].help);
+        client_print_newline(client_socket);
+        return;
+    }
+
+    long addr = strtol((char*) data, NULL, 16);
+
+    DB_playItem_t *track = (DB_playItem_t*) addr;
+    int idx = deadbeef->pl_get_idx_of(track); // get MAIN playlist track index
+
+    if(idx == -1) {
+        client_print_string(client_socket, "\nInvalid track memory address\n\n");
+        return;
+    }
+
+    deadbeef->sendmessage(DB_EV_PLAY_NUM, 0, idx, 0);
 }
 
 static void beefmote_command_random(int client_socket, void *data)
@@ -881,7 +882,7 @@ static void beefmote_command_search(int client_socket, void *data)
         client_print_string(client_socket, "(");
         client_print_string(client_socket, num);
         client_print_string(client_socket, ") ");
-        client_print_track(client_socket, track);
+        client_print_track(client_socket, track, false);
         deadbeef->pl_item_unref(track);
     }
 
