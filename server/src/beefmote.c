@@ -68,6 +68,8 @@ enum BEEFMOTE_COMMANDS {
     BEEFMOTE_SEEK_FORWARD,
     BEEFMOTE_SEEK_BACKWARD,
     BEEFMOTE_SEARCH,
+    BEEFMOTE_NOTIFY_PLAYLISTCHANGED,
+    BEEFMOTE_NOTIFY_NOW_PLAYING,
     BEEFMOTE_EXIT,
     BEEFMOTE_COMMANDS_N // marks end of command list
 };
@@ -86,8 +88,11 @@ static uintptr_t beefmote_stopthread_mutex;
 static intptr_t beefmote_tid;
 static int beefmote_stopthread;
 static int beefmote_socket;
+static int beefmote_client_socket;
 static beefmote_command beefmote_commands[BEEFMOTE_COMMANDS_N];
 static DB_playItem_t* beefmote_currtrack;
+static bool beefmote_notify_playlistchanged;
+static bool beefmote_notify_nowplaying;
 
 // Beefmote's settings dialog widget description.
 static const char beefmote_settings_dialog[] = {
@@ -141,6 +146,8 @@ static void beefmote_command_volume_down(int client_socket, void *data);
 static void beefmote_command_seek_forward(int client_socket, void *data);
 static void beefmote_command_seek_backward(int client_socket, void *data);
 static void beefmote_command_search(int client_socket, void *data);
+static void beefmote_command_notify_playlistchanged(int client_socket, void* data);
+static void beefmote_command_notify_nowplaying(int client_socket, void* data);
 static void beefmote_command_exit(int client_socket, void *data);
 
 
@@ -179,6 +186,9 @@ static int plugin_start()
 {
     beefmote_stopthread = 0;
     beefmote_currtrack = NULL;
+    beefmote_notify_playlistchanged = false;
+    beefmote_notify_nowplaying = false;
+    beefmote_client_socket = -1;
     beefmote_stopthread_mutex = deadbeef->mutex_create_nonrecursive();
     beefmote_initialize_commands();
     beefmote_listen();
@@ -323,7 +333,6 @@ static void beefmote_thread(void *data)
     char beefmote_buffer[BEEFMOTE_BUFSIZE];
     memset(beefmote_buffer, 0, BEEFMOTE_BUFSIZE);
 
-    int client_socket;
     struct sockaddr_in client_addr;
     int client_size = sizeof(client_addr);
 
@@ -351,7 +360,7 @@ static void beefmote_thread(void *data)
         }
 
         // Accept (non-blocking) client connection.
-        if ((client_socket = accept(beefmote_socket, (struct sockaddr *) &client_addr,
+        if ((beefmote_client_socket = accept(beefmote_socket, (struct sockaddr *) &client_addr,
                                     &client_size)) < 0) {
             sleep(BEEFMOTE_WAIT_CLIENT);        // let's not kill the CPU, shall we?
             continue;
@@ -359,7 +368,7 @@ static void beefmote_thread(void *data)
 
         beefmote_debug_print("got connection from %s\n", inet_ntoa(client_addr.sin_addr));
 
-        int bytes_n = write(client_socket, welcome_str, welcome_len);
+        int bytes_n = write(beefmote_client_socket, welcome_str, welcome_len);
 
         if (bytes_n != welcome_len) {
             beefmote_debug_print("error: failure while sending data to client\n");
@@ -372,7 +381,8 @@ static void beefmote_thread(void *data)
             deadbeef->mutex_lock(beefmote_stopthread_mutex);
             if (beefmote_stopthread == 1) {
                 deadbeef->mutex_unlock(beefmote_stopthread_mutex);
-                close(client_socket);
+                close(beefmote_client_socket);
+                beefmote_client_socket = -1;
                 return;
             }
             deadbeef->mutex_unlock(beefmote_stopthread_mutex);
@@ -380,39 +390,42 @@ static void beefmote_thread(void *data)
             // All this stuff has to be set *every* time before a select(),
             // because select() modifies it.
             FD_ZERO(&readfds);
-            FD_SET(client_socket, &readfds);
+            FD_SET(beefmote_client_socket, &readfds);
             timeout.tv_sec = BEEFMOTE_WAIT_CLIENT;
             timeout.tv_usec = 0;
-            int rv = select(client_socket + 1, &readfds, NULL, NULL, &timeout);
+            int rv = select(beefmote_client_socket + 1, &readfds, NULL, NULL, &timeout);
 
             if (rv == -1) {
                 beefmote_debug_print("error: select failed\n");
-                close(client_socket);
+                close(beefmote_client_socket);
+                beefmote_client_socket = -1;
                 break;
             } else if (rv == 0) {
                 continue;
             } else {
-                if (FD_ISSET(client_socket, &readfds)) {
+                if (FD_ISSET(beefmote_client_socket, &readfds)) {
                     // Read and print data from client.
-                    int bytes_n = read(client_socket, beefmote_buffer, BEEFMOTE_BUFSIZE);
+                    int bytes_n = read(beefmote_client_socket, beefmote_buffer, BEEFMOTE_BUFSIZE);
 
                     if (bytes_n < 0) {
                         beefmote_debug_print("error: failed on read(), errno = %d, closing client socket\n", errno);
-                        close(client_socket);
+                        close(beefmote_client_socket);
+                        beefmote_client_socket = -1;
                         break;
                     }
 
                     if (bytes_n == 0) {
                         beefmote_debug_print("client %s closed connection\n",
                                              inet_ntoa(client_addr.sin_addr));
-                        close(client_socket);
+                        close(beefmote_client_socket);
+                        beefmote_client_socket = -1;
                         break;
                     }
 
                     // Process commands.
                     beefmote_debug_print("received %d bytes from client %s: %s", bytes_n,
                                          inet_ntoa(client_addr.sin_addr), beefmote_buffer);
-                    beefmote_process_command(client_socket, beefmote_buffer);
+                    beefmote_process_command(beefmote_client_socket, beefmote_buffer);
                     memset(beefmote_buffer, 0, BEEFMOTE_BUFSIZE);
                 }
             }
@@ -563,6 +576,12 @@ static void beefmote_initialize_commands()
     beefmote_command_new(BEEFMOTE_SEARCH, "/", "usage: / str. Searches a string in the current " \
             "playlist and returns a list of matching tracks. The matched tracks can be played by using their index " \
             "number with the ps command.", beefmote_command_search);
+    beefmote_command_new(BEEFMOTE_NOTIFY_PLAYLISTCHANGED, "ntfy-plchanged",
+                         "Notifies when the current playlist has changed (meaning you'll probably " \
+                         "want to get the tracklist again).", beefmote_command_notify_playlistchanged);
+    beefmote_command_new(BEEFMOTE_NOTIFY_NOW_PLAYING, "ntfy-nowplaying",
+                         "Notifies when a new track starts to play.",
+                         beefmote_command_notify_nowplaying);
     beefmote_command_new(BEEFMOTE_EXIT, "exit", "terminates Deadbeef.", beefmote_command_exit);
 }
 
@@ -597,7 +616,6 @@ static void beefmote_process_command(int client_socket, char *command)
                 *arg_ptr = 0;
             }
         }
-        beefmote_debug_print("  DETECTED ARG: %s\n", arg);
     }
 
     // At this point, we are guaranteed that:
@@ -630,9 +648,35 @@ static void beefmote_process_command(int client_socket, char *command)
 
 static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2)
 {
+    ddb_event_track_t* ev;
+
     switch (id) {
     case DB_EV_SONGCHANGED:
         beefmote_currtrack = ((ddb_event_trackchange_t*) ctx)->to;
+
+        if (beefmote_currtrack && beefmote_notify_nowplaying && beefmote_client_socket != -1) {
+            client_print_string(beefmote_client_socket, "Now playing ");
+            client_print_track(beefmote_client_socket, beefmote_currtrack, false);
+            client_print_newline(beefmote_client_socket);
+        }
+
+        break;
+
+    /* Deadbeef is basically useless if you want to get a by-track
+     * changelog, meaning you CAN'T get a list of, e.g. added or
+     * deleted tracks to/from a playlist. Such is life. When a song
+     * is deleted, the case is DB_EV_PLAYLISTCHANGED, and p1 is
+     * DDB_PLAYLIST_CHANGE_CONTENT. That's all the info you get,
+     * meaning a client will have to get the ENTIRE tracklist
+     * AGAIN for just the one deleted track if it wants to keep in
+     * sync with the Deadbeef playlist. *sigh* */
+    case DB_EV_PLAYLISTCHANGED:
+        if (p1 == DDB_PLAYLIST_CHANGE_CONTENT) {
+            if (beefmote_client_socket != -1 && beefmote_notify_playlistchanged) {
+                client_print_string(beefmote_client_socket, "\nThe current playlist content changed; you " \
+                                    "may want to get the tracklist again.\n\n");
+            }
+        }
         break;
     }
 
@@ -954,6 +998,44 @@ static void beefmote_command_search(int client_socket, void *data)
     }
 
     deadbeef->plt_unref(pl_curr);
+}
+
+static void beefmote_command_notify_playlistchanged(int client_socket, void* data)
+{
+    assert(client_socket > 0);
+
+    beefmote_notify_playlistchanged = !beefmote_notify_playlistchanged;
+
+    char msg[BEEFMOTE_STR_MAXLENGTH];
+    strcpy(msg, "\nPlaylist change notification set to ");
+
+    if (beefmote_notify_playlistchanged) {
+        strcat(msg, "true.\n\n");
+    }
+    else {
+        strcat(msg, "false.\n\n");
+    }
+
+    client_print_string(client_socket, msg);
+}
+
+static void beefmote_command_notify_nowplaying(int client_socket, void* data)
+{
+    assert(client_socket > 0);
+
+    beefmote_notify_nowplaying = !beefmote_notify_nowplaying;
+
+    char msg[BEEFMOTE_STR_MAXLENGTH];
+    strcpy(msg, "\nNow playing notification set to ");
+
+    if (beefmote_notify_nowplaying) {
+        strcat(msg, "true.\n\n");
+    }
+    else {
+        strcat(msg, "false.\n\n");
+    }
+
+    client_print_string(client_socket, msg);
 }
 
 static void beefmote_command_exit(int client_socket, void *data)
