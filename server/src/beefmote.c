@@ -70,6 +70,7 @@ enum BEEFMOTE_COMMANDS {
     BEEFMOTE_SEARCH,
     BEEFMOTE_NOTIFY_PLAYLISTCHANGED,
     BEEFMOTE_NOTIFY_NOW_PLAYING,
+    BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE,
     BEEFMOTE_EXIT,
     BEEFMOTE_COMMANDS_N // marks end of command list
 };
@@ -146,9 +147,10 @@ static void beefmote_command_volume_down(int client_socket, void *data);
 static void beefmote_command_seek_forward(int client_socket, void *data);
 static void beefmote_command_seek_backward(int client_socket, void *data);
 static void beefmote_command_search(int client_socket, void *data);
-static void beefmote_command_notify_playlistchanged(int client_socket, void* data);
-static void beefmote_command_notify_nowplaying(int client_socket, void* data);
-static void beefmote_command_exit(int client_socket, void *data);
+static void beefmote_command_notify_playlistchanged(int client_socket, void *data);
+static void beefmote_command_notify_nowplaying(int client_socket, void *data);
+static void beefmote_command_add_search_playbackqueue(int client_socket, void *data);
+static void beefmote_command_exit(int client_socket, void* data);
 
 
   ///////////
@@ -569,10 +571,14 @@ static void beefmote_initialize_commands()
     beefmote_command_new(BEEFMOTE_STOP, "s", "stops playback.", beefmote_command_stop);
     beefmote_command_new(BEEFMOTE_PREVIOUS, "pv", "plays previous track.", beefmote_command_previous);
     beefmote_command_new(BEEFMOTE_NEXT, "nt", "plays next track.", beefmote_command_next);
-    beefmote_command_new(BEEFMOTE_VOLUME_UP, "vup", "increases volume.", beefmote_command_volume_up);
-    beefmote_command_new(BEEFMOTE_VOLUME_DOWN, "vdn", "decreases volume.", beefmote_command_volume_down);
-    beefmote_command_new(BEEFMOTE_SEEK_FORWARD, "sfr", "seeks forward.", beefmote_command_seek_forward);
-    beefmote_command_new(BEEFMOTE_SEEK_BACKWARD, "sbr", "seeks backward.", beefmote_command_seek_backward);
+    beefmote_command_new(BEEFMOTE_VOLUME_UP, "vu", "usage: vu [step]. If no argument is passed, " \
+                         "increases volume by a default step of 5. If a number is passed, increases volume " \
+                         "by that amount.", beefmote_command_volume_up);
+    beefmote_command_new(BEEFMOTE_VOLUME_DOWN, "vd", "usage: vd [step]. If no argument is passed, " \
+                         "decreases volume by a default step of 5. If a number is passed, decreases volume " \
+                         "by that amount.", beefmote_command_volume_down);
+    beefmote_command_new(BEEFMOTE_SEEK_FORWARD, "sf", "seeks forward.", beefmote_command_seek_forward);
+    beefmote_command_new(BEEFMOTE_SEEK_BACKWARD, "sb", "seeks backward.", beefmote_command_seek_backward);
     beefmote_command_new(BEEFMOTE_SEARCH, "/", "usage: / str. Searches a string in the current " \
             "playlist and returns a list of matching tracks. The matched tracks can be played by using their index " \
             "number with the ps command.", beefmote_command_search);
@@ -582,6 +588,8 @@ static void beefmote_initialize_commands()
     beefmote_command_new(BEEFMOTE_NOTIFY_NOW_PLAYING, "ntfy-nowplaying",
                          "Notifies when a new track starts to play.",
                          beefmote_command_notify_nowplaying);
+    beefmote_command_new(BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE, "aps", "usage: aps idx. Adds a searched track to the " \
+                         "playback queue.", beefmote_command_add_search_playbackqueue);
     beefmote_command_new(BEEFMOTE_EXIT, "exit", "terminates Deadbeef.", beefmote_command_exit);
 }
 
@@ -814,8 +822,6 @@ static void beefmote_command_play_search(int client_socket, void *data)
         return;
     }
 
-    beefmote_debug_print("  TRACK_INDEX: %d\n", track_index);
-
     ddb_playlist_t *pl_curr = deadbeef->plt_get_curr();
     if (!pl_curr) {
         return;
@@ -928,7 +934,14 @@ static void beefmote_command_volume_up(int client_socket, void *data)
     assert(client_socket > 0);
     assert(deadbeef);
 
-    deadbeef->volume_set_db(deadbeef->volume_get_db() + BEEFMOTE_VOLUME_STEP);
+    int step;
+    if (data) {
+        step = strtol(data, NULL, 10);
+    }
+    else {
+        step = BEEFMOTE_VOLUME_STEP;
+    }
+    deadbeef->volume_set_db(deadbeef->volume_get_db() + step);
 }
 
 static void beefmote_command_volume_down(int client_socket, void *data)
@@ -936,7 +949,14 @@ static void beefmote_command_volume_down(int client_socket, void *data)
     assert(client_socket > 0);
     assert(deadbeef);
 
-    deadbeef->volume_set_db(deadbeef->volume_get_db() - BEEFMOTE_VOLUME_STEP);
+    int step;
+    if (data) {
+        step = strtol(data, NULL, 10);
+    }
+    else {
+        step = BEEFMOTE_VOLUME_STEP;
+    }
+    deadbeef->volume_set_db(deadbeef->volume_get_db() - step);
 }
 
 static void beefmote_command_seek_forward(int client_socket, void *data)
@@ -1000,7 +1020,7 @@ static void beefmote_command_search(int client_socket, void *data)
     deadbeef->plt_unref(pl_curr);
 }
 
-static void beefmote_command_notify_playlistchanged(int client_socket, void* data)
+static void beefmote_command_notify_playlistchanged(int client_socket, void *data)
 {
     assert(client_socket > 0);
 
@@ -1019,7 +1039,7 @@ static void beefmote_command_notify_playlistchanged(int client_socket, void* dat
     client_print_string(client_socket, msg);
 }
 
-static void beefmote_command_notify_nowplaying(int client_socket, void* data)
+static void beefmote_command_notify_nowplaying(int client_socket, void *data)
 {
     assert(client_socket > 0);
 
@@ -1036,6 +1056,38 @@ static void beefmote_command_notify_nowplaying(int client_socket, void* data)
     }
 
     client_print_string(client_socket, msg);
+}
+
+static void beefmote_command_add_search_playbackqueue(int client_socket, void *data)
+{
+    assert(client_socket > 0);
+
+    if (!data) {
+        client_print_newline(client_socket);
+        client_print_string(client_socket, beefmote_commands[BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE].help);
+        client_print_newline(client_socket);
+        return;
+    }
+
+    int track_index = strtol((char*) data, NULL, 10);
+    if (!track_index) {
+        client_print_string(client_socket, "\nInvalid search index\n\n");
+        return;
+    }
+
+    ddb_playlist_t *pl_curr = deadbeef->plt_get_curr();
+    if (!pl_curr) {
+        return;
+    }
+
+    DB_playItem_t *track = deadbeef->plt_get_item_for_idx(pl_curr, --track_index, PL_SEARCH);
+    if (track) {
+        deadbeef->playqueue_push(track);
+        deadbeef->pl_item_unref(track);
+    }
+    else {
+        client_print_string(client_socket, "\nInvalid search index\n\n");
+    }
 }
 
 static void beefmote_command_exit(int client_socket, void *data)
