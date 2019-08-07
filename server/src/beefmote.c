@@ -315,17 +315,17 @@ static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bo
     int i = 0;
     DB_playItem_t *track;
 
-    client_print_newline(client_socket);
+    client_print_string(client_socket, "TRACKLIST_BEGIN\n");
 
     while (track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN)) {
         char idx[20];
-        sprintf(idx, "(%d)\t", i);
+        sprintf(idx, "(%d) ", i);
         client_print_string(client_socket, idx);
         client_print_track(client_socket, track, print_addr);
         deadbeef->pl_item_unref(track);
     }
 
-    client_print_newline(client_socket);
+    client_print_string(client_socket, "TRACKLIST_END\n");
 
     return --i;
 }
@@ -586,7 +586,8 @@ static void beefmote_initialize_commands()
                          "Notifies when the current playlist has changed (meaning you'll probably " \
                          "want to get the tracklist again).", beefmote_command_notify_playlistchanged);
     beefmote_command_new(BEEFMOTE_NOTIFY_NOW_PLAYING, "ntfy-nowplaying",
-                         "Notifies when a new track starts to play.",
+                         "usage: ntfy-nowplaying true/false. Sets whether to notify when a new track " \
+                         "starts to play. Default: false.",
                          beefmote_command_notify_nowplaying);
     beefmote_command_new(BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE, "aps", "usage: aps idx. Adds a searched track to the " \
                          "playback queue.", beefmote_command_add_search_playbackqueue);
@@ -1027,7 +1028,7 @@ static void beefmote_command_notify_playlistchanged(int client_socket, void *dat
     beefmote_notify_playlistchanged = !beefmote_notify_playlistchanged;
 
     char msg[BEEFMOTE_STR_MAXLENGTH];
-    strcpy(msg, "\nPlaylist change notification set to ");
+    strcpy(msg, "\nNotification set to ");
 
     if (beefmote_notify_playlistchanged) {
         strcat(msg, "true.\n\n");
@@ -1043,19 +1044,29 @@ static void beefmote_command_notify_nowplaying(int client_socket, void *data)
 {
     assert(client_socket > 0);
 
-    beefmote_notify_nowplaying = !beefmote_notify_nowplaying;
+    if(!data) {
+        client_print_newline(client_socket);
+        client_print_string(client_socket, beefmote_commands[BEEFMOTE_NOTIFY_NOW_PLAYING].help);
+        client_print_newline(client_socket);
+        return;
+    }
 
-    char msg[BEEFMOTE_STR_MAXLENGTH];
-    strcpy(msg, "\nNow playing notification set to ");
+    char *str = data;
 
-    if (beefmote_notify_nowplaying) {
-        strcat(msg, "true.\n\n");
+    if (strcmp(str, "true") == 0) {
+        beefmote_notify_nowplaying = true;
+        beefmote_debug_print("Now playing notification set to true\n");
+    }
+    else if (strcmp(str, "false") == 0) {
+        beefmote_notify_nowplaying = false;
+        beefmote_debug_print("Now playing notification set to false\n");
     }
     else {
-        strcat(msg, "false.\n\n");
-    }
-
-    client_print_string(client_socket, msg);
+        client_print_newline(client_socket);
+        client_print_string(client_socket, beefmote_commands[BEEFMOTE_NOTIFY_NOW_PLAYING].help);
+        client_print_newline(client_socket);
+        return;
+    } 
 }
 
 static void beefmote_command_add_search_playbackqueue(int client_socket, void *data)
