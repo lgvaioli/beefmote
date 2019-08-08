@@ -315,7 +315,7 @@ static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bo
     int i = 0;
     DB_playItem_t *track;
 
-    client_print_string(client_socket, "TRACKLIST_BEGIN\n");
+    client_print_string(client_socket, "[BEEFMOTE_TRACKLIST_BEGIN]\n");
 
     while (track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN)) {
         char idx[20];
@@ -325,7 +325,7 @@ static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bo
         deadbeef->pl_item_unref(track);
     }
 
-    client_print_string(client_socket, "TRACKLIST_END\n");
+    client_print_string(client_socket, "[BEEFMOTE_TRACKLIST_END]\n");
 
     return --i;
 }
@@ -657,6 +657,8 @@ static void beefmote_process_command(int client_socket, char *command)
 
 static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2)
 {
+    assert(deadbeef);
+
     ddb_event_track_t* ev;
 
     switch (id) {
@@ -664,9 +666,11 @@ static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2
         beefmote_currtrack = ((ddb_event_trackchange_t*) ctx)->to;
 
         if (beefmote_currtrack && beefmote_notify_nowplaying && beefmote_client_socket != -1) {
-            client_print_string(beefmote_client_socket, "Now playing ");
-            client_print_track(beefmote_client_socket, beefmote_currtrack, false);
-            client_print_newline(beefmote_client_socket);
+            char nowPlaying[BEEFMOTE_STR_MAXLENGTH];
+            int idx = deadbeef->pl_get_idx_of(beefmote_currtrack);
+
+            sprintf(nowPlaying, "[BEEFMOTE_NOW_PLAYING] %d\n", idx);
+            client_print_string(beefmote_client_socket, nowPlaying);
         }
 
         break;
