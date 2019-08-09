@@ -319,7 +319,7 @@ static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bo
 
     while (track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN)) {
         char idx[20];
-        sprintf(idx, "(%d) ", i);
+        sprintf(idx, "(%d) ", i - 1);
         client_print_string(client_socket, idx);
         client_print_track(client_socket, track, print_addr);
         deadbeef->pl_item_unref(track);
@@ -736,12 +736,12 @@ static void beefmote_command_playlists(int client_socket, void *data)
     if (data) {
         int idx = strtol((char*) data, NULL, 10);
 
-        if (idx < 1 || idx > pl_n) {
+        if (idx < 0 || idx >= pl_n) {
             client_print_string(client_socket, "\nPlaylist index out of bounds\n\n");
             return;
         }
 
-        deadbeef->plt_set_curr_idx(--idx);
+        deadbeef->plt_set_curr_idx(idx);
         return;
     }
 
@@ -753,7 +753,7 @@ static void beefmote_command_playlists(int client_socket, void *data)
         ddb_playlist_t *pl = deadbeef->plt_get_for_idx(i);
         char pl_name[BEEFMOTE_STR_MAXLENGTH];
         deadbeef->plt_get_title(pl, pl_name, sizeof(pl_name));
-        sprintf(str, "\nPlaylist %d: %s", i + 1, pl_name);
+        sprintf(str, "\nPlaylist %d: %s", i, pl_name);
         client_print_string(client_socket, str);
         if (pl_curr == pl) {
             client_print_string(client_socket, " (*)");
@@ -822,7 +822,7 @@ static void beefmote_command_play_search(int client_socket, void *data)
     }
 
     int track_index = strtol((char*) data, NULL, 10);
-    if (!track_index) {
+    if (track_index < 0) {
         client_print_string(client_socket, "\nInvalid search index\n\n");
         return;
     }
@@ -832,7 +832,7 @@ static void beefmote_command_play_search(int client_socket, void *data)
         return;
     }
 
-    DB_playItem_t *track = deadbeef->plt_get_item_for_idx(pl_curr, --track_index, PL_SEARCH);
+    DB_playItem_t *track = deadbeef->plt_get_item_for_idx(pl_curr, track_index, PL_SEARCH);
     if (track) {
         client_print_string(client_socket, "\nPlaying ");
         client_print_track(client_socket, track, false);
@@ -885,7 +885,7 @@ static void beefmote_command_play_resume(int client_socket, void *data)
 
     if (data) {
         int idx = strtol((char*) data, NULL, 10);
-        deadbeef->sendmessage(DB_EV_PLAY_NUM, 0, --idx, 0);
+        deadbeef->sendmessage(DB_EV_PLAY_NUM, 0, idx, 0);
         return;
     }
 
@@ -1009,7 +1009,7 @@ static void beefmote_command_search(int client_socket, void *data)
     while (track = deadbeef->plt_get_item_for_idx(pl_curr, i++, PL_SEARCH)) {
         once = true;
         char idx[20];
-        sprintf(idx, "(%d)\t", i);
+        sprintf(idx, "(%d)\t", i - 1);
         client_print_string(client_socket, idx);
         client_print_track(client_socket, track, false);
         deadbeef->pl_item_unref(track);
