@@ -93,7 +93,7 @@ static int beefmote_client_socket;
 static beefmote_command beefmote_commands[BEEFMOTE_COMMANDS_N];
 static DB_playItem_t* beefmote_currtrack;
 static bool beefmote_notify_playlistchanged;
-static bool beefmote_notify_nowplaying;
+static bool beefmote_notify_now_playing;
 
 // Beefmote's settings dialog widget description.
 static const char beefmote_settings_dialog[] = {
@@ -148,7 +148,7 @@ static void beefmote_command_seek_forward(int client_socket, void *data);
 static void beefmote_command_seek_backward(int client_socket, void *data);
 static void beefmote_command_search(int client_socket, void *data);
 static void beefmote_command_notify_playlistchanged(int client_socket, void *data);
-static void beefmote_command_notify_nowplaying(int client_socket, void *data);
+static void beefmote_command_notify_now_playing(int client_socket, void *data);
 static void beefmote_command_add_search_playbackqueue(int client_socket, void *data);
 static void beefmote_command_exit(int client_socket, void* data);
 
@@ -189,7 +189,7 @@ static int plugin_start()
     beefmote_stopthread = 0;
     beefmote_currtrack = NULL;
     beefmote_notify_playlistchanged = false;
-    beefmote_notify_nowplaying = false;
+    beefmote_notify_now_playing = false;
     beefmote_client_socket = -1;
     beefmote_stopthread_mutex = deadbeef->mutex_create_nonrecursive();
     beefmote_initialize_commands();
@@ -588,7 +588,7 @@ static void beefmote_initialize_commands()
     beefmote_command_new(BEEFMOTE_NOTIFY_NOW_PLAYING, "ntfy-nowplaying",
                          "usage: ntfy-nowplaying true/false. Sets whether to notify when a new track " \
                          "starts to play. Default: false.",
-                         beefmote_command_notify_nowplaying);
+                         beefmote_command_notify_now_playing);
     beefmote_command_new(BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE, "aps", "usage: aps idx. Adds a searched track to the " \
                          "playback queue.", beefmote_command_add_search_playbackqueue);
     beefmote_command_new(BEEFMOTE_EXIT, "exit", "terminates Deadbeef.", beefmote_command_exit);
@@ -665,12 +665,15 @@ static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2
     case DB_EV_SONGCHANGED:
         beefmote_currtrack = ((ddb_event_trackchange_t*) ctx)->to;
 
-        if (beefmote_currtrack && beefmote_notify_nowplaying && beefmote_client_socket != -1) {
-            char nowPlaying[BEEFMOTE_STR_MAXLENGTH];
+        if (beefmote_currtrack && beefmote_notify_now_playing && beefmote_client_socket != -1) {
             int idx = deadbeef->pl_get_idx_of(beefmote_currtrack);
 
-            sprintf(nowPlaying, "[BEEFMOTE_NOW_PLAYING] %d\n", idx);
-            client_print_string(beefmote_client_socket, nowPlaying);
+            char str[BEEFMOTE_STR_MAXLENGTH];
+            sprintf(str, "[BEEFMOTE_NOW_PLAYING] (%d) ", idx);
+
+            client_print_string(beefmote_client_socket, str);
+            client_print_track(beefmote_client_socket, beefmote_currtrack, true);
+            client_print_newline(beefmote_client_socket);
         }
 
         break;
@@ -1044,7 +1047,7 @@ static void beefmote_command_notify_playlistchanged(int client_socket, void *dat
     client_print_string(client_socket, msg);
 }
 
-static void beefmote_command_notify_nowplaying(int client_socket, void *data)
+static void beefmote_command_notify_now_playing(int client_socket, void *data)
 {
     assert(client_socket > 0);
 
@@ -1058,11 +1061,11 @@ static void beefmote_command_notify_nowplaying(int client_socket, void *data)
     char *str = data;
 
     if (strcmp(str, "true") == 0) {
-        beefmote_notify_nowplaying = true;
+        beefmote_notify_now_playing = true;
         beefmote_debug_print("Now playing notification set to true\n");
     }
     else if (strcmp(str, "false") == 0) {
-        beefmote_notify_nowplaying = false;
+        beefmote_notify_now_playing = false;
         beefmote_debug_print("Now playing notification set to false\n");
     }
     else {
