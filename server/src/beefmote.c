@@ -315,11 +315,16 @@ static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bo
     int i = 0;
     DB_playItem_t *track;
 
-    client_print_string(client_socket, "[BEEFMOTE_TRACKLIST_BEGIN]\n");
+    int pl_count = deadbeef->plt_get_item_count(playlist, PL_MAIN);
+
+    char str[BEEFMOTE_STR_MAXLENGTH];
+    sprintf(str, "[BEEFMOTE_TRACKLIST_BEGIN] %d\n", pl_count);
+    client_print_string(client_socket, str);
+
 
     while (track = deadbeef->plt_get_item_for_idx(playlist, i++, PL_MAIN)) {
-        char idx[20];
-        sprintf(idx, "(%d) ", i - 1);
+        char idx[BEEFMOTE_STR_MAXLENGTH];
+        sprintf(idx, "[BEEFMOTE_TRACKLIST_TRACK] (%d) ", i - 1);
         client_print_string(client_socket, idx);
         client_print_track(client_socket, track, print_addr);
         deadbeef->pl_item_unref(track);
