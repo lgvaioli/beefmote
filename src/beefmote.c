@@ -68,7 +68,8 @@ enum BEEFMOTE_COMMANDS {
     BEEFMOTE_SEEK_FORWARD,
     BEEFMOTE_SEEK_BACKWARD,
     BEEFMOTE_SEARCH,
-    BEEFMOTE_NOTIFY_PLAYLISTCHANGED,
+    BEEFMOTE_NOTIFY_PLAYLIST_CHANGED,
+    BEEFMOTE_NOTIFY_PLAYLIST_SWITCHED,
     BEEFMOTE_NOTIFY_NOW_PLAYING,
     BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE,
     BEEFMOTE_EXIT,
@@ -92,7 +93,8 @@ static int beefmote_socket;
 static int beefmote_client_socket;
 static beefmote_command beefmote_commands[BEEFMOTE_COMMANDS_N];
 static DB_playItem_t* beefmote_currtrack;
-static bool beefmote_notify_playlistchanged;
+static bool beefmote_notify_playlist_changed;
+static bool beefmote_notify_playlist_switched;
 static bool beefmote_notify_now_playing;
 
 // Beefmote's settings dialog widget description.
@@ -127,6 +129,10 @@ static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2
 static void beefmote_command_new(int comm_id, const char *comm_name, const char *comm_help,
                                  void (*execute)(int client_socket, void* data));
 
+// Helper function for setting Beefmote's boolean globals.
+static void beefmote_set_boolean(int client_socket, bool *some_bool, char *some_bool_name,
+                                 char *help, void *true_false);
+
 // Beefmote's commands.
 static void beefmote_command_help(int client_socket, void *data);
 static void beefmote_command_playlists(int client_socket, void *data);
@@ -147,7 +153,8 @@ static void beefmote_command_volume_down(int client_socket, void *data);
 static void beefmote_command_seek_forward(int client_socket, void *data);
 static void beefmote_command_seek_backward(int client_socket, void *data);
 static void beefmote_command_search(int client_socket, void *data);
-static void beefmote_command_notify_playlistchanged(int client_socket, void *data);
+static void beefmote_command_notify_playlist_changed(int client_socket, void *data);
+static void beefmote_command_notify_playlist_switched(int client_socket, void *data);
 static void beefmote_command_notify_now_playing(int client_socket, void *data);
 static void beefmote_command_add_search_playbackqueue(int client_socket, void *data);
 static void beefmote_command_exit(int client_socket, void* data);
@@ -188,7 +195,8 @@ static int plugin_start()
 {
     beefmote_stopthread = 0;
     beefmote_currtrack = NULL;
-    beefmote_notify_playlistchanged = false;
+    beefmote_notify_playlist_changed = false;
+    beefmote_notify_playlist_switched = false;
     beefmote_notify_now_playing = false;
     beefmote_client_socket = -1;
     beefmote_stopthread_mutex = deadbeef->mutex_create_nonrecursive();
@@ -547,55 +555,81 @@ static void beefmote_command_new(int comm_id, const char *comm_name, const char 
 static void beefmote_initialize_commands()
 {
     beefmote_command_new(BEEFMOTE_HELP, "h", "prints this message.", beefmote_command_help);
+
     beefmote_command_new(BEEFMOTE_PLAYLISTS, "pl",
                          "usage: pl [idx]. If passed with no arguments, prints all playlists (" \
                          "the current playlist is marked with (*)). " \
                          "If passed with an index number, sets the current playlist to the " \
                          "playlist with index idx.",
 		    	 beefmote_command_playlists);
+
     beefmote_command_new(BEEFMOTE_TRACKLIST, "tl", "prints all the tracks in the current playlist.",
                          beefmote_command_tracklist);
+
     beefmote_command_new(BEEFMOTE_TRACKLIST_ADDRESS, "tla",
                          "like tl, but prepends each track by its memory address.",
                          beefmote_command_tracklist_address);
+
     beefmote_command_new(BEEFMOTE_TRACKCURR, "tc", "prints the current track.", beefmote_command_trackcurr);
+
     beefmote_command_new(BEEFMOTE_PLAY, "pp", "plays current track.", beefmote_command_play);
+
     beefmote_command_new(BEEFMOTE_PLAY_SEARCH, "ps", "usage: ps idx. " \
                          "Plays a track by its index in the search list.",
                          beefmote_command_play_search);
+
     beefmote_command_new(BEEFMOTE_PLAY_ADDRESS, "pa", "usage: pa memaddr. " \
                          "Plays a track by memory address; memaddr must be written in " \
                          "hex notation.", beefmote_command_play_address);
+
     beefmote_command_new(BEEFMOTE_PLAY_RESUME, "p",
                          "Usage: p [idx]. If passed with no arguments, pauses/resumes playback. " \
                          "If passed with an index, plays the track at index idx in the current " \
                          "playlist.", beefmote_command_play_resume);
+
     beefmote_command_new(BEEFMOTE_RANDOM, "r", "plays random track.", beefmote_command_random);
+
     beefmote_command_new(BEEFMOTE_STOP_AFTER_CURRENT, "sac", "stops playback after current track.",
                          beefmote_command_stop_after_current);
+
     beefmote_command_new(BEEFMOTE_STOP, "s", "stops playback.", beefmote_command_stop);
+
     beefmote_command_new(BEEFMOTE_PREVIOUS, "pv", "plays previous track.", beefmote_command_previous);
+
     beefmote_command_new(BEEFMOTE_NEXT, "nt", "plays next track.", beefmote_command_next);
+
     beefmote_command_new(BEEFMOTE_VOLUME_UP, "vu", "usage: vu [step]. If no argument is passed, " \
                          "increases volume by a default step of 5. If a number is passed, increases volume " \
                          "by that amount.", beefmote_command_volume_up);
+
     beefmote_command_new(BEEFMOTE_VOLUME_DOWN, "vd", "usage: vd [step]. If no argument is passed, " \
                          "decreases volume by a default step of 5. If a number is passed, decreases volume " \
                          "by that amount.", beefmote_command_volume_down);
+
     beefmote_command_new(BEEFMOTE_SEEK_FORWARD, "sf", "seeks forward.", beefmote_command_seek_forward);
+
     beefmote_command_new(BEEFMOTE_SEEK_BACKWARD, "sb", "seeks backward.", beefmote_command_seek_backward);
+
     beefmote_command_new(BEEFMOTE_SEARCH, "/", "usage: / str. Searches a string in the current " \
             "playlist and returns a list of matching tracks. The matched tracks can be played by using their index " \
             "number with the ps command.", beefmote_command_search);
-    beefmote_command_new(BEEFMOTE_NOTIFY_PLAYLISTCHANGED, "ntfy-plchanged",
-                         "Notifies when the current playlist has changed (meaning you'll probably " \
-                         "want to get the tracklist again).", beefmote_command_notify_playlistchanged);
+
+    beefmote_command_new(BEEFMOTE_NOTIFY_PLAYLIST_CHANGED, "ntfy-plchanged",
+                         "usage: ntfy-plchanged true/false. Sets whether to notify when the current playlist changes. " \
+                         "Default: false.", beefmote_command_notify_playlist_changed);
+
+    beefmote_command_new(BEEFMOTE_NOTIFY_PLAYLIST_SWITCHED, "ntfy-plswitched",
+                         "usage: ntfy-plswitched true/false. Sets whether to notify when the playlist switches. " \
+                         "Default: false.", beefmote_command_notify_playlist_switched);
+
     beefmote_command_new(BEEFMOTE_NOTIFY_NOW_PLAYING, "ntfy-nowplaying",
                          "usage: ntfy-nowplaying true/false. Sets whether to notify when a new track " \
                          "starts to play. Default: false.",
                          beefmote_command_notify_now_playing);
+
     beefmote_command_new(BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE, "aps", "usage: aps idx. Adds a searched track to the " \
                          "playback queue.", beefmote_command_add_search_playbackqueue);
+
     beefmote_command_new(BEEFMOTE_EXIT, "exit", "terminates Deadbeef.", beefmote_command_exit);
 }
 
@@ -693,11 +727,17 @@ static int beefmote_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2
      * sync with the Deadbeef playlist. *sigh* */
     case DB_EV_PLAYLISTCHANGED:
         if (p1 == DDB_PLAYLIST_CHANGE_CONTENT) {
-            if (beefmote_client_socket != -1 && beefmote_notify_playlistchanged) {
-                client_print_string(beefmote_client_socket, "\nThe current playlist content changed; you " \
-                                    "may want to get the tracklist again.\n\n");
+            if (beefmote_client_socket != -1 && beefmote_notify_playlist_changed) {
+                client_print_string(beefmote_client_socket, "[BEEFMOTE_PLAYLIST_CHANGED]\n");
             }
         }
+        break;
+
+    case DB_EV_PLAYLISTSWITCHED:
+        if (beefmote_client_socket != -1 && beefmote_notify_playlist_switched) {
+            client_print_string(beefmote_client_socket, "[BEEFMOTE_PLAYLIST_SWITCHED]\n");
+        }
+
         break;
     }
 
@@ -1033,52 +1073,52 @@ static void beefmote_command_search(int client_socket, void *data)
     deadbeef->plt_unref(pl_curr);
 }
 
-static void beefmote_command_notify_playlistchanged(int client_socket, void *data)
+static void beefmote_set_boolean(int client_socket, bool *some_bool, char *some_bool_name,
+                                 char *help, void *true_false)
 {
-    assert(client_socket > 0);
+    assert(client_socket > 0 && some_bool && some_bool_name && help);
 
-    beefmote_notify_playlistchanged = !beefmote_notify_playlistchanged;
+    if(!true_false) {
+        client_print_newline(client_socket);
+        client_print_string(client_socket, help);
+        client_print_newline(client_socket);
+        return;
+    }
 
-    char msg[BEEFMOTE_STR_MAXLENGTH];
-    strcpy(msg, "\nNotification set to ");
+    char *str = true_false;
 
-    if (beefmote_notify_playlistchanged) {
-        strcat(msg, "true.\n\n");
+    if (strcmp(str, "true") == 0) {
+        *some_bool = true;
+        beefmote_debug_print("%s notification set to true\n", some_bool_name);
+    }
+    else if (strcmp(str, "false") == 0) {
+        *some_bool = false;
+        beefmote_debug_print("%s notification set to false\n", some_bool_name);
     }
     else {
-        strcat(msg, "false.\n\n");
-    }
+        client_print_newline(client_socket);
+        client_print_string(client_socket, help);
+        client_print_newline(client_socket);
+        return;
+    } 
+}
 
-    client_print_string(client_socket, msg);
+static void beefmote_command_notify_playlist_changed(int client_socket, void *data)
+{
+    beefmote_set_boolean(client_socket, &beefmote_notify_playlist_changed, "Playlist changed",
+            beefmote_commands[BEEFMOTE_NOTIFY_PLAYLIST_CHANGED].help, data);
+}
+
+static void beefmote_command_notify_playlist_switched(int client_socket, void *data)
+{
+    beefmote_set_boolean(client_socket, &beefmote_notify_playlist_switched, "Playlist switched",
+            beefmote_commands[BEEFMOTE_NOTIFY_PLAYLIST_SWITCHED].help, data);
 }
 
 static void beefmote_command_notify_now_playing(int client_socket, void *data)
 {
-    assert(client_socket > 0);
-
-    if(!data) {
-        client_print_newline(client_socket);
-        client_print_string(client_socket, beefmote_commands[BEEFMOTE_NOTIFY_NOW_PLAYING].help);
-        client_print_newline(client_socket);
-        return;
-    }
-
-    char *str = data;
-
-    if (strcmp(str, "true") == 0) {
-        beefmote_notify_now_playing = true;
-        beefmote_debug_print("Now playing notification set to true\n");
-    }
-    else if (strcmp(str, "false") == 0) {
-        beefmote_notify_now_playing = false;
-        beefmote_debug_print("Now playing notification set to false\n");
-    }
-    else {
-        client_print_newline(client_socket);
-        client_print_string(client_socket, beefmote_commands[BEEFMOTE_NOTIFY_NOW_PLAYING].help);
-        client_print_newline(client_socket);
-        return;
-    } 
+    beefmote_set_boolean(client_socket, &beefmote_notify_now_playing, "Now playing",
+            beefmote_commands[BEEFMOTE_NOTIFY_NOW_PLAYING].help, data);
 }
 
 static void beefmote_command_add_search_playbackqueue(int client_socket, void *data)
