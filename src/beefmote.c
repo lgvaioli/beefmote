@@ -71,6 +71,8 @@ enum BEEFMOTE_COMMANDS {
     BEEFMOTE_NOTIFY_PLAYLIST_CHANGED,
     BEEFMOTE_NOTIFY_PLAYLIST_SWITCHED,
     BEEFMOTE_NOTIFY_NOW_PLAYING,
+    BEEFMOTE_ADD_PLAYBACKQUEUE,
+    BEEFMOTE_ADD_PLAYBACKQUEUE_ADDRESS,
     BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE,
     BEEFMOTE_EXIT,
     BEEFMOTE_COMMANDS_N // marks end of command list
@@ -156,6 +158,8 @@ static void beefmote_command_search(int client_socket, void *data);
 static void beefmote_command_notify_playlist_changed(int client_socket, void *data);
 static void beefmote_command_notify_playlist_switched(int client_socket, void *data);
 static void beefmote_command_notify_now_playing(int client_socket, void *data);
+static void beefmote_command_add_playbackqueue(int client_socket, void *data);
+static void beefmote_command_add_playbackqueue_address(int client_socket, void *data);
 static void beefmote_command_add_search_playbackqueue(int client_socket, void *data);
 static void beefmote_command_exit(int client_socket, void* data);
 
@@ -177,6 +181,12 @@ static void client_print_track(int client_socket, DB_playItem_t *track, bool pri
 // Prints to a client all tracks of a playlist using client_print_track. Returns number of tracks printed.
 static int client_print_playlist(int client_socket, ddb_playlist_t *playlist, bool print_addr);
 
+// A function for a adding a track to a playlist's playback queue.
+// playlist: must be either PL_MAIN or PL_SEARCH.
+// index: the track's index.
+// Returns: > 0 if everything went ok, 0 of there isn't a current playlist, -1
+// if the search index was invalid.
+static int playlist_add_to_playbackqueue(int playlist, int index);
 
   /////////////////////////////////////
  // Start of Deadbeef's boilerplate //
@@ -626,6 +636,12 @@ static void beefmote_initialize_commands()
                          "usage: ntfy-nowplaying true/false. Sets whether to notify when a new track " \
                          "starts to play. Default: false.",
                          beefmote_command_notify_now_playing);
+
+    beefmote_command_new(BEEFMOTE_ADD_PLAYBACKQUEUE_ADDRESS, "apa", "usage: apa memaddr. Adds a track by " \
+                         "memory address to the playback queue.", beefmote_command_add_playbackqueue_address);
+
+    beefmote_command_new(BEEFMOTE_ADD_PLAYBACKQUEUE, "ap", "usage: ap idx. Adds a track to the " \
+                         "playback queue.", beefmote_command_add_playbackqueue);
 
     beefmote_command_new(BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE, "aps", "usage: aps idx. Adds a searched track to the " \
                          "playback queue.", beefmote_command_add_search_playbackqueue);
@@ -1121,6 +1137,72 @@ static void beefmote_command_notify_now_playing(int client_socket, void *data)
             beefmote_commands[BEEFMOTE_NOTIFY_NOW_PLAYING].help, data);
 }
 
+static int playlist_add_to_playbackqueue(int playlist, int index)
+{
+    assert(deadbeef);
+    assert(playlist == PL_MAIN || playlist == PL_SEARCH);
+
+    if (index < 0) {
+        return -1;
+    }
+
+    ddb_playlist_t *pl_curr = deadbeef->plt_get_curr();
+    if (!pl_curr) {
+        return 0;
+    }
+
+    DB_playItem_t *track = deadbeef->plt_get_item_for_idx(pl_curr, index, playlist);
+    if (track) {
+        deadbeef->playqueue_push(track);
+        deadbeef->pl_item_unref(track);
+        return 1;
+    }
+    else {
+        return -1;
+    }
+}
+
+static void beefmote_command_add_playbackqueue(int client_socket, void *data)
+{
+    assert(client_socket > 0);
+
+    if (!data) {
+        client_print_newline(client_socket);
+        client_print_string(client_socket, beefmote_commands[BEEFMOTE_ADD_PLAYBACKQUEUE].help);
+        client_print_newline(client_socket);
+        return;
+    }
+
+    int track_index = strtol((char*) data, NULL, 10);
+
+    if (playlist_add_to_playbackqueue(PL_MAIN, track_index) == -1) {
+        client_print_string(client_socket, "[BEEFMOTE_ADD_PLAYBACKQUEUE] Invalid search index\n");
+        return;
+    }
+}
+
+static void beefmote_command_add_playbackqueue_address(int client_socket, void *data)
+{
+    assert(client_socket > 0);
+    assert(deadbeef);
+
+    if (!data) {
+        client_print_newline(client_socket);
+        client_print_string(client_socket, beefmote_commands[BEEFMOTE_ADD_PLAYBACKQUEUE_ADDRESS].help);
+        client_print_newline(client_socket);
+        return;
+    }
+
+    long addr = strtol((char*) data, NULL, 16);
+    DB_playItem_t *track = (DB_playItem_t*) addr;
+    int idx = deadbeef->pl_get_idx_of(track); // get MAIN playlist track index
+
+    if(idx == -1 || playlist_add_to_playbackqueue(PL_MAIN, idx) == -1) {
+        client_print_string(client_socket, "[BEEFMOTE_ADD_PLAYBACKQUEUE_ADDRESS] Invalid track memory address\n");
+        return;
+    }
+}
+
 static void beefmote_command_add_search_playbackqueue(int client_socket, void *data)
 {
     assert(client_socket > 0);
@@ -1133,23 +1215,10 @@ static void beefmote_command_add_search_playbackqueue(int client_socket, void *d
     }
 
     int track_index = strtol((char*) data, NULL, 10);
-    if (!track_index) {
-        client_print_string(client_socket, "\nInvalid search index\n\n");
-        return;
-    }
 
-    ddb_playlist_t *pl_curr = deadbeef->plt_get_curr();
-    if (!pl_curr) {
+    if (playlist_add_to_playbackqueue(PL_SEARCH, track_index) == -1) {
+        client_print_string(client_socket, "[BEEFMOTE_ADD_SEARCH_PLAYBACKQUEUE] Invalid search index\n");
         return;
-    }
-
-    DB_playItem_t *track = deadbeef->plt_get_item_for_idx(pl_curr, --track_index, PL_SEARCH);
-    if (track) {
-        deadbeef->playqueue_push(track);
-        deadbeef->pl_item_unref(track);
-    }
-    else {
-        client_print_string(client_socket, "\nInvalid search index\n\n");
     }
 }
 
