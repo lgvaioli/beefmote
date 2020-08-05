@@ -6,7 +6,8 @@ all :
 	gcc $(CFLAGS) -c -o bin/beefmote.o src/beefmote.c
 	gcc $(LDFLAGS) $(CFLAGS) -o bin/beefmote.so bin/beefmote.o
 
-install :   
+install :
+	if ! [ -d ~/.local/lib64/deadbeef/ ]; then mkdir -p ~/.local/lib64/deadbeef/; fi
 	cp bin/beefmote.so ~/.local/lib64/deadbeef/
                 
 clean :
